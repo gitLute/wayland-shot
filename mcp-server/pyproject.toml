@@ -1,0 +1,20 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "wayland-shot-mcp-server"
+version = "0.1.0"
+description = "MCP-сервер скриншотов для KDE Plasma (Wayland): окна, активация, снимки, OCR"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+dependencies = [
+    "mcp>=1.12",
+]
+
+[project.scripts]
+wayland-shot-mcp-server = "wayland_shot.server:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/wayland_shot"]

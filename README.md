@@ -14,7 +14,22 @@ ImageMagick (identify) и tesseract. Позволяет LLM-агенту пер�
 ## Установка
 
 Проект устанавливается в общий Python-venv для MCP-серверов
-`/home/lute/.local/bin/MCP/PytnonVenv` (Python 3.14, `mcp>=1.12`):
+`/home/lute/.local/bin/MCP/PytnonVenv` (Python 3.14, `mcp>=1.12`).
+
+Сам venv создаётся один раз системным `python3` (проверено на 3.14.7,
+внутри появляется `pip` 26.x):
+
+```bash
+python3 -m venv /home/lute/.local/bin/MCP/PytnonVenv
+```
+
+Каталог с исходниками `wayland-shot-mcp-server/` лежит **внутри** venv,
+поэтому ключ `--clear` у `python3 -m venv` использовать нельзя: он удалит
+содержимое каталога вместе с исходниками. Пересоздание venv на месте
+безопаснее делать вручную — удалить `bin/` и `lib/` и повторить команду
+выше.
+
+Установка пакета в режиме редактирования (исходники подхватываются сразу):
 
 ```bash
 /home/lute/.local/bin/MCP/PytnonVenv/bin/pip install -e \

@@ -10,8 +10,12 @@ MCP_DEV/wayland-shot (KWin scripting + Spectacle + tesseract).
   - активировать окно (focus + raise) с проверкой и ретраями (activate_window);
   - снимать конкретное окно с контролем размера/OCR-маркера (capture_window);
   - снимать активное окно или весь экран (capture_active_window, capture_screen);
-  - распознавать текст на снимке (ocr_text, ocr_words);
+  - распознавать текст на снимке (ocr_text, ocr_words, verify_ocr);
   - получать снимки как бинарные ресурсы (screenshot://<имя файла>).
+
+Инструменты OCR принимают изображение двумя способами: screenshot_uri —
+значение поля resource_uri из результата capture_*, либо image_path — путь
+к файлу. Достаточно одного из двух.
 
 Снимки сохраняются в каталог WAYLAND_SHOT_OUTPUT (по умолчанию
 ~/Pictures/wayland-shot). Временные JS-скрипты для KWin — в WSHOT_TMP
@@ -47,8 +51,10 @@ _NAME_RE = re.compile(r"^[\w\-. ]+\.(?:png|jpe?g|webp)$", re.IGNORECASE)
 instructions = (
     "Сервер управляет окнами KDE Plasma (Wayland) и создаёт скриншоты. "
     "Типовой сценарий: find_window (по pid или части заголовка) -> "
-    "capture_window -> ocr_text по пути из результата. Снимки отдаются как "
-    "ресурсы screenshot://<имя файла> (имя возвращается в поле resource_uri). "
+    "capture_window -> ocr_text. Результат capture_* содержит поле resource_uri "
+    "со значением screenshot://<имя файла>; это значение передаётся в ocr_text "
+    "как screenshot_uri (или как image_path — имя параметра значения не меняет). "
+    "Снимки также отдаются как ресурсы screenshot://<имя файла>. "
     "Работает только в KDE Plasma 6 на Wayland. Заголовки и текст можно "
     "передавать на русском — в JS-скрипты они не попадают."
 )
@@ -257,7 +263,8 @@ async def activate_window(
         "последующих (ловит «сняли не то окно»), 'fixed' — ожидаемый размер из expect_w/"
         "expect_h (физические пиксели), 'off' — без контроля. marker — подстрока, которую "
         "должен содержать текст окна (OCR, lang). Возвращает путь к PNG, размер и "
-        "resource_uri для чтения картинки."
+        "resource_uri для чтения картинки; resource_uri передаётся в ocr_text и "
+        "verify_ocr как screenshot_uri."
     )
 )
 async def capture_window(
@@ -373,7 +380,8 @@ async def capture_window(
 @mcp.tool(
     description=(
         "Снимок текущего активного окна через Spectacle (-a), без активации. "
-        "Возвращает путь к PNG, размер и resource_uri. output — необязательный путь; "
+        "Возвращает путь к PNG, размер и resource_uri; resource_uri передаётся в ocr_text "
+        "и verify_ocr как screenshot_uri. output — необязательный путь; "
         "по умолчанию файл создаётся в WAYLAND_SHOT_OUTPUT."
     )
 )
@@ -395,7 +403,8 @@ async def capture_active_window(ctx: Context, output: str | None = None) -> dict
 @mcp.tool(
     description=(
         "Снимок всего рабочего стола через Spectacle (-f). Возвращает путь к PNG, "
-        "размер и resource_uri. output — необязательный путь."
+        "размер и resource_uri; resource_uri передаётся в ocr_text и verify_ocr как "
+        "screenshot_uri. output — необязательный путь."
     )
 )
 async def capture_screen(ctx: Context, output: str | None = None) -> dict:
@@ -418,11 +427,34 @@ async def capture_screen(ctx: Context, output: str | None = None) -> dict:
 # ---------------------------------------------------------------------------
 
 
-def _require_image(image_path):
-    """Проверяет и резолвит путь к изображению (файл или screenshot://)."""
-    if not image_path:
-        raise ToolError("укажите image_path")
-    abs_path, err = _resolve_image_path(image_path)
+def _require_image(image_path=None, screenshot_uri=None):
+    """Резолвит путь к изображению из image_path или screenshot_uri.
+
+    Оба аргумента необязательны по отдельности, но хотя бы один должен быть
+    задан. screenshot_uri принимает значение поля resource_uri из результата
+    capture_* без преобразований; image_path — путь к файлу (допускается и
+    ресурс screenshot://<имя>). Если заданы оба, они должны указывать на один
+    файл: сравниваются разрешённые пути, а не исходные строки, поэтому запись
+    «ресурс» и «путь» считаются одним и тем же.
+    """
+    if not screenshot_uri and not image_path:
+        raise ToolError(
+            "укажите screenshot_uri (из результата capture_*) или image_path"
+        )
+
+    if screenshot_uri and image_path:
+        by_path, err_path = _resolve_image_path(image_path)
+        by_uri, err_uri = _resolve_image_path(screenshot_uri)
+        if err_path or err_uri:
+            raise ToolError("; ".join(e for e in (err_path, err_uri) if e))
+        if os.path.abspath(by_path) != os.path.abspath(by_uri):
+            raise ToolError(
+                "screenshot_uri и image_path указывают на разные файлы: %s и %s; "
+                "оставьте что-то одно" % (by_uri, by_path)
+            )
+        return os.path.abspath(by_path)
+
+    abs_path, err = _resolve_image_path(screenshot_uri or image_path)
     if abs_path is None:
         raise ToolError(err)
     return abs_path
@@ -431,13 +463,20 @@ def _require_image(image_path):
 @mcp.tool(
     description=(
         "Распознаёт текст на изображении через tesseract (по умолчанию psm 6, языки "
-        "rus+eng). image_path — абсолютный путь к PNG/JPG или ресурс screenshot://<имя> "
-        "из результата capture_*. lang — языки из 'tesseract --list-langs'."
+        "rus+eng). screenshot_uri — значение поля resource_uri из результата "
+        "capture_* (screenshot://<имя>), передаётся без преобразований; image_path — "
+        "абсолютный путь к PNG/JPG. Достаточно одного из двух. lang — языки из "
+        "'tesseract --list-langs'."
     )
 )
-async def ocr_text(ctx: Context, image_path: str, lang: str = "rus+eng") -> dict:
+async def ocr_text(
+    ctx: Context,
+    image_path: str | None = None,
+    lang: str = "rus+eng",
+    screenshot_uri: str | None = None,
+) -> dict:
     """Текст изображения целиком."""
-    abs_path = _require_image(image_path)
+    abs_path = _require_image(image_path, screenshot_uri)
     text, err = kwinlib.ocr_text_full(abs_path, lang=lang, psm=6)
     if err:
         raise ToolError("tesseract (%s): %s" % (lang, err))
@@ -449,16 +488,20 @@ async def ocr_text(ctx: Context, image_path: str, lang: str = "rus+eng") -> dict
     description=(
         "Распознаёт слова на изображении с координатами (tesseract --psm 11 tsv): "
         "слово, уверенность 0-100, left/top/width/height в пикселях снимка. "
-        "min_conf отсекает неуверенные слова. image_path — путь к файлу или ресурс "
-        "screenshot://<имя>. Координаты можно использовать для последующих действий "
-        "по снимку."
+        "min_conf отсекает неуверенные слова. screenshot_uri — значение resource_uri "
+        "из результата capture_*; image_path — путь к файлу. Достаточно одного из "
+        "двух. Координаты можно использовать для последующих действий по снимку."
     )
 )
 async def ocr_words(
-    ctx: Context, image_path: str, lang: str = "rus+eng", min_conf: float = 0.0
+    ctx: Context,
+    image_path: str | None = None,
+    lang: str = "rus+eng",
+    min_conf: float = 0.0,
+    screenshot_uri: str | None = None,
 ) -> dict:
     """Слова с координатами из изображения."""
-    abs_path = _require_image(image_path)
+    abs_path = _require_image(image_path, screenshot_uri)
     words, err = kwinlib.ocr_words_full(abs_path, lang=lang, psm=11, min_conf=min_conf)
     if err:
         raise ToolError("tesseract (%s): %s" % (lang, err))
@@ -480,22 +523,24 @@ async def ocr_words(
 @mcp.tool(
     description=(
         "OCR-проверка: распознаёт текст снимка (psm 6) и определяет, содержит ли он "
-        "ожидаемую подстроку expected (без учёта регистра). image_path — путь к файлу "
-        "или ресурс screenshot://<имя>. Возвращает found, число вхождений и фрагмент "
+        "ожидаемую подстроку expected (без учёта регистра). screenshot_uri — значение "
+        "resource_uri из результата capture_*; image_path — путь к файлу. Достаточно "
+        "одного из двух. Возвращает found, число вхождений и фрагмент "
         "текста вокруг первого совпадения. Удобно для assert-сценариев: после "
         "capture_window проверить, что в кадре действительно нужный контент."
     )
 )
 async def verify_ocr(
     ctx: Context,
-    image_path: str,
     expected: str,
+    image_path: str | None = None,
     lang: str = "rus+eng",
+    screenshot_uri: str | None = None,
 ) -> dict:
     """Проверка, что текст на снимке содержит ожидаемую подстроку."""
     if not expected or not expected.strip():
         raise ToolError("укажите непустую expected")
-    abs_path = _require_image(image_path)
+    abs_path = _require_image(image_path, screenshot_uri)
     text, err = kwinlib.ocr_text_full(abs_path, lang=lang, psm=6)
     if err:
         raise ToolError("tesseract (%s): %s" % (lang, err))

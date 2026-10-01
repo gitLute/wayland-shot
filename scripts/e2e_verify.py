@@ -4,7 +4,8 @@
 
 Снимает окна Dolphin / Alacritty / Kate через capture_window и прогоняет
 verify_ocr: позитивные проверки (ожидаемый текст есть), негативную
-(ожидаемого текста нет) и проверку по ресурсу screenshot://<имя>.
+(ожидаемого текста нет), передачу через image_path и через screenshot_uri
+(значение resource_uri из результата capture_window).
 
 Запуск:
     /home/lute/.local/bin/MCP/PytnonVenv/bin/python scripts/e2e_verify.py
@@ -27,10 +28,11 @@ def call_text(res):
     return res.content[0].text if res.content else "?"
 
 
-async def check(session, name, image_path, expected, want=True):
+async def check(session, name, value, expected, want=True, key="image_path"):
+    """Проверка verify_ocr; key выбирает способ передачи изображения."""
     res = await session.call_tool(
         "verify_ocr",
-        {"image_path": image_path, "expected": expected},
+        {key: value, "expected": expected},
     )
     data = json.loads(call_text(res))
     ok = data.get("found") is want
@@ -95,6 +97,16 @@ async def main():
                             "%s (по ресурсу)" % name,
                             uri,
                             expected,
+                        )
+                    )
+                    # новый способ: resource_uri из capture_* -> screenshot_uri
+                    results.append(
+                        await check(
+                            session,
+                            "%s (по screenshot_uri)" % name,
+                            uri,
+                            expected,
+                            key="screenshot_uri",
                         )
                     )
 
